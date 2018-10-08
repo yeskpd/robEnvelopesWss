@@ -38,6 +38,29 @@ myLog = Logs("./领取记录.txt")
 
 # 回调事件
 dic_cls_relation = {} # 类关系
+list_receive_id = [] # 领取过的记录 ['网址-账号-id']
+
+try:
+    with open("./receive_id.txt") as f:
+        list_receive_id = f.read().split("\n")
+except:
+    pass
+
+file_receive_id = open("./receive_id.txt","a+")
+
+# 配置
+try:
+    config = json.load(open("./config.json"))
+except:
+    config = {}
+
+
+# 添加领取ID记录
+def save_receive_id(data):
+    list_receive_id.append(data)
+    file_receive_id.write(data+"\n")
+    file_receive_id.flush()
+
 
 
 def on_message(ws, message):
@@ -81,9 +104,11 @@ def on_open(ws):
     :param ws: 
     :return: 
     """
-    cls = dic_cls_relation.get(ws)
-    if cls:
-        cls.on_connect_success()
+
+    # 在消息接中进行了判断处理了，返回o表示连接成功wss。
+    # cls = dic_cls_relation.get(ws)
+    # if cls:
+        # cls.on_connect_success()
 
 
 
@@ -125,7 +150,7 @@ class Reptilian(object):
         self.is_user_normal = True # 账号是否正常
         self.is_login = False # 未登录
         self.is_login_work = False # 账号是否在登录工作
-        self.debug = False # 是否调试
+        self.debug = config.get("debug",False) # 是否调试
 
     def logs_e(self,errMsg,is_show = False):
         """
@@ -386,6 +411,10 @@ class Reptilian(object):
             _id = _json.get("id",0);
             if _id < 1 or _json.get("status","0") != "1":
                 return
+            if self.Website+"-"+self.user+"-"+str(_id) in list_receive_id:
+                # 已经存在了。
+                return
+
             # 信息开头
             str_msg = "%s|%s|%s|[%s|%s]条件:%s充值-流水:%s|"%(
                 Date_utils.getNowDateStr("%H:%M:%S"),
@@ -397,8 +426,7 @@ class Reptilian(object):
                 _json.get("betMoney")
                 )
 
-            self.logs_d(self.msg)
-            self.logs("红包：{%s}"%str_msg)
+            self.logs_d(self.msg,True)
 
             url = self.chatUrl + "/chat/luckyBag.do?_t="+Time_utils.getNowTimeNum()
             data = "token=" +self.token+ "&packetId=" + str(_id)
@@ -419,6 +447,8 @@ class Reptilian(object):
             self.logs_i(str_msg + "结果[：%s"% r.text)
             _json = json.loads(r.text)
             resultCode = _json.get("result",-1)
+            # 记录这个ID，不要重复抢
+            save_receive_id(self.Website+"-"+self.user+"-"+str(_id))
             if resultCode == 0:
                 # 抢包成功
                 str_msg  += "成功抢到[%s]元"%str(_json.get("money"))
@@ -429,6 +459,8 @@ class Reptilian(object):
                 # 条件不达标
                 str_msg += "已抢完!"
             elif resultCode == 3:
+                str_msg += "红包已过期"
+            elif resultCode == 4:
                 str_msg += "曾经领取过"
             else:
                 # 错误，未知！
@@ -464,6 +496,7 @@ class Reptilian(object):
             if not self.getToken():
                 raise Exception("token获取失败！")
 
+            # 有的连接需要设置协议头。这里按抓包的协议头给他设置
             header = {"Connection": "Upgrade",
                       "Pragma": "no-cache",
                       "Cache-Control": "no-cache",
@@ -555,6 +588,8 @@ class Reptilian(object):
         """
         find_x = data.find(r"\n\n")
         if find_x ==-1:
+            if "o" == data:
+                self.on_connect_success()
             return
         data = TextUtils.getTextMiddle(data,r"\n\n",r'\u0000"]').replace(r'\"',r'"');
         res = re.findall(r',"content":"({.*?})",',data)

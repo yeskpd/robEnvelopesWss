@@ -15,10 +15,10 @@ __author__ = 'Sto'
 import time
 import threading
 import queue
-from funCore import Reptilian
+from funCore import Reptilian,config
 
 # 设置任务队列 (队列是为后期加web对接定制的。)
-task_Queue = queue.Queue(1000)
+task_Queue = queue.Queue(config.get("threadNum",50))
 list_user = [] # 全局账号列表，主要用于使用
 
 def startUpUserWork(r):
@@ -29,22 +29,44 @@ def startUpUserWork(r):
    """
    r.is_login_work = True  # 标记这个类正在执行登录工作，避免重复线程启动
 
-   for _ in range(50):
-       try:
-           r.loadConfigjs() # 登录地址
-           r.login() # 登录账号
+   try:
+       r.loadConfigjs() # 登录地址
+       r.login() # 登录账号
 
-           # 登录成功,使用线程开始连接wss
-           threading.Thread(target=r.connect_wss).start()
-           break # 结束本次登录
-       except Exception as e:
-           msg = str(e)
-           if msg.find("密码") != -1:
-               break
-           time.sleep(20) # 延时20秒后继续登录
+       # 登录成功,使用线程开始连接wss
+       threading.Thread(target=r.connect_wss).start()
+   except Exception as e:
+       # 错误了，线程维护登录程序！(主要是释放这个账号等的登录线程，让出队列线程空位。)
+       threading.Thread(target=startUpUserWorkFor, args=(r,)).start()
+   else:
+       # 没有报错
+       r.is_login_work = False # 放开，表示没有在登录工作
 
-   r.is_login_work = False # 放开，表示没有在登录工作
 
+def startUpUserWorkFor(r):
+    """
+    登录失败以后使用一个线程在这里维护继续登录。
+    :param r: 
+    :return: 
+    """
+    r.is_login_work = True  # 标记这个类正在执行登录工作，避免重复线程启动
+
+    for _ in range(50):
+        r.is_login_work = True
+        try:
+            r.loadConfigjs()  # 登录地址
+            r.login()  # 登录账号
+
+            # 登录成功,使用线程开始连接wss
+            threading.Thread(target=r.connect_wss).start()
+            break  # 结束本次登录
+        except Exception as e:
+            msg = str(e)
+            if msg.find("密码") != -1:
+                break
+            time.sleep(config.get("loginErrTime",60))  # 延时20秒后继续登录
+
+    r.is_login_work = False  # 放开，表示没有在登录工作
 
 
 
@@ -99,7 +121,7 @@ def heartbeat():
     :return: 
     """
     while True:
-        time.sleep(30) # 30秒检查一次账号状态
+        time.sleep(config.get("heartbeatTime",30)) # 30秒检查一次账号状态
         for r in list_user:
             if not r.is_accord_heartbeat():
                 continue # 不符合心跳，换一个
@@ -111,7 +133,7 @@ if __name__ == '__main__':
     # 启动监控队列
     threading.Thread(target=startUp).start()
     # 开始载入本地数据
-    loadTextUser("./userList.txt")
+    loadTextUser(config.get("loadTextUserPath","./userList.txt"))
     # 打开账号心跳
     heartbeat()
 

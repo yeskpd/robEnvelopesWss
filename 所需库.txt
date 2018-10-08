@@ -1,4 +1,0 @@
-websocket-client
-requests
-
-# 其他缺少的自己找。。。。
