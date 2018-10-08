@@ -1,0 +1,9 @@
+从PyPI安装PyInstaller：
+
+pip install pyinstaller
+转到程序的目录并运行：
+
+pyinstaller yourprogram.py  # yourprogram.py是主文件名
+这将在名为的子目录中生成包dist。
+
+有关更详细的演练，请参阅手册。
