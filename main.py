@@ -18,8 +18,8 @@ import queue
 from funCore import Reptilian,config
 
 # 设置任务队列 (队列是为后期加web对接定制的。)
-task_Queue = queue.Queue(config.get("threadNum",50))
-list_user = [] # 全局账号列表，主要用于使用
+task_Queue = queue.Queue(config.get("threadNum",100))
+list_user = [] # 全局账号列表，主要用于使用心跳
 
 def startUpUserWork(r):
    """
@@ -28,13 +28,14 @@ def startUpUserWork(r):
    :return: 
    """
    r.is_login_work = True  # 标记这个类正在执行登录工作，避免重复线程启动
-
    try:
        r.loadConfigjs() # 登录地址
        r.login() # 登录账号
 
-       # 登录成功,使用线程开始连接wss
+       # 连接wss，不能直接掉调用这个方法会卡主，直到断开或者异常
        threading.Thread(target=r.connect_wss).start()
+       time.sleep(2) # 延时好了。
+
    except Exception as e:
        # 错误了，线程维护登录程序！(主要是释放这个账号等的登录线程，让出队列线程空位。)
        threading.Thread(target=startUpUserWorkFor, args=(r,)).start()
@@ -79,10 +80,7 @@ def startUp():
         # 得到一个任务
         r = task_Queue.get()
         list_user.append(r)  # 加入账号列表
-        # 使用线程处理登录
-        t = threading.Thread(target=startUpUserWork, args=(r,))
-        t.start()
-
+        startUpUserWork(r) # 单线程登录，登录失败会自动开启多线程维护
 
 
 
@@ -111,9 +109,10 @@ def heartbeatWork(r):
 
     if not r.user_heartbeat() or not r.is_connect():
         # 账号掉线 或 没有连接，使用线程继续登录
-        t = threading.Thread(target=startUpUserWork, args=(r,)).start()
-
-    r.is_login_work = False
+        t = threading.Thread(target=startUpUserWorkFor, args=(r,)).start()
+    else:
+        # 账号正常，释放
+        r.is_login_work = False
 
 def heartbeat():
     """
@@ -126,12 +125,14 @@ def heartbeat():
             if not r.is_accord_heartbeat():
                 continue # 不符合心跳，换一个
             # 使用线程来心跳，有的会网络堵塞，为了不避免后面的账号出现太大延时
-            # t = threading.Thread(target=heartbeatWork, args=(r,)).start()
-            heartbeatWork(r)
+            t = threading.Thread(target=heartbeatWork, args=(r,)).start()
+            # heartbeatWork(r)
 
 if __name__ == '__main__':
-    # 启动监控队列
-    threading.Thread(target=startUp).start()
+    # 启动监控队列，这里最大开启20个线程即可
+    for _ in range(config.get("threadNum",20)):
+        threading.Thread(target=startUp).start()
+
     # 开始载入本地数据
     loadTextUser(config.get("loadTextUserPath","./userList.txt"))
     # 打开账号心跳

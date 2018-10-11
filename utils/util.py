@@ -46,12 +46,12 @@ class TextUtils(object):
     文本工具类
     """
     @staticmethod
-    def getRandomLetter(num):
+    def getRandomCharacter(num):
         """
-        获取随机字母
+        获取随机字符
         :return: 
         """
-        d = "abcdefghijklmnopqrstuvwxyz";
+        d = "abcdefghijklmnopqrstuvwxyz012345";
         str1 = ""
         for _ in range(num):
             str1 += random.choice(d)
@@ -126,4 +126,4 @@ class Date_utils(object):
         return time.strftime(format, timeStruct)
 
 if __name__ == '__main__':
-    print(Date_utils.getNowDateStr("%H:%M:%S"))
+    print(TextUtils.getRandomCharacter(8))

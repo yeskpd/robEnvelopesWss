@@ -17,7 +17,9 @@ import json
 import random
 import time
 import re
+import os
 import logging # 日志模块
+import threading
 from utils.util import CodeUtils,TextUtils,Time_utils,Date_utils
 from utils.log import Logs
 from retrying import retry
@@ -40,13 +42,6 @@ myLog = Logs("./领取记录.txt")
 dic_cls_relation = {} # 类关系
 list_receive_id = [] # 领取过的记录 ['网址-账号-id']
 
-try:
-    with open("./receive_id.txt") as f:
-        list_receive_id = f.read().split("\n")
-except:
-    pass
-
-file_receive_id = open("./receive_id.txt","a+")
 
 # 配置
 try:
@@ -55,12 +50,47 @@ except:
     config = {}
 
 
+# 记录
+try:
+    with open("./receive_id.txt") as f:
+        list_receive_id = f.read().split("\n")
+except:
+    pass
+file_receive_id = open("./receive_id.txt","a+")
 # 添加领取ID记录
 def save_receive_id(data):
     list_receive_id.append(data)
     file_receive_id.write(data+"\n")
     file_receive_id.flush()
 
+
+lock_up_down=threading.Lock() # 文件全局锁
+def save_up_down(_key,data):
+    """
+    保存上下线
+    :param _key: 
+    :param data: 
+    :return: 
+    """
+    lock_up_down.acquire() # 使用同步块保证这个文件不会被多线程影响
+    try:
+        data = Date_utils.getNowDateStr("%Y-%m-%d %H:%M:%S") +":"+data + "\n"
+        if os.path.isfile("./上下线记录.txt"):
+            with open("./上下线记录.txt","r") as f:
+                da = f.read()
+                if da.find("[%s]\n"%_key) !=-1:
+                    da = da.replace("[%s]\n"%_key,"[%s]\n%s"%(_key,data))
+                else:
+                    da += "\n[%s]\n%s"%(_key,data)
+                data = da
+        else:
+            data =  "[%s]\n%s"%(_key,data)
+        with open("./上下线记录.txt", "w") as f:
+            f.write(data)
+    except:
+        pass
+    finally:
+        lock_up_down.release()
 
 
 def on_message(ws, message):
@@ -146,11 +176,15 @@ class Reptilian(object):
         self.msg = "暂无状态！" # 目前状态标记
         self.chatUrl = None # 连接地址，红包地址
         self.token = None # 登录聊天室用的token和领取红包用的
+        self.roomId = None # 聊天室id
         self.ws = None # ws连接对象
         self.is_user_normal = True # 账号是否正常
         self.is_login = False # 未登录
         self.is_login_work = False # 账号是否在登录工作
         self.debug = config.get("debug",False) # 是否调试
+        self.is_god_chat = False # 是否进入聊天室
+
+        self.lock=threading.Lock() # 创建一个锁对象
 
     def logs_e(self,errMsg,is_show = False):
         """
@@ -251,8 +285,7 @@ class Reptilian(object):
            # self.cookies = "x-session-token=" + r.cookies.get("x-session-token")
            self.is_login = True # 已登录
            self.msg = "账号登录成功！"
-           self.logs_d(self.msg)
-           self.logs_i(self.msg, True)
+           self.logs_i("账号登录成功!", True)
            return True
         # 失败
         self.msg = _json.get("msg","未知登录错误！")
@@ -343,6 +376,7 @@ class Reptilian(object):
             self.logs_e("获取账号Token失败：" + r.text)
             raise Exception("token获取失败")
         self.token = token
+        self.roomId = str(_json["room"]["id"])
         self.msg = "账号Token获取成功："+token
         self.logs_d(self.msg)
 
@@ -369,13 +403,18 @@ class Reptilian(object):
         """
         if not self.is_login:
             return False
+        if self.is_god_chat:
+            # 发送ws心跳，不然webSocket会收回连接池
+            # self.sendWs("[]")
+            pass
+
         try:
             self.logs_d("发送账号心跳.")
             url = self.Website + "/game/getUserMsg.do?_t="+Time_utils.getNowTimeNum()
             headers = {
                 "Accept": "application/json, text/plain, */*",
                 "User-Agent": "Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/69.0.3497.81 Safari/537.36",
-                "Referer": "https://www.dt00.com/game/"
+                "Referer": self.Website + "/game/"
             }
             r = self.session.get(url,headers=headers,verify=False)
             if r.text.find("登录无效") != -1:
@@ -387,6 +426,7 @@ class Reptilian(object):
             return True
         except Exception as e:
             # 心跳一次，无需处理，可能是网络网通 视为账号会话正常
+            self.logs_d("发送账号心跳异常："+str(e))
             return True
 
     def is_connect(self):
@@ -398,7 +438,7 @@ class Reptilian(object):
 
 
 
-    def on_envelopes(self,jsonStr):
+    def on_envelopes(self,jsonStr,time_start=0):
         """
         红包通知
         13:50|[888.00|688个]条件:5000充值|5000流水
@@ -431,7 +471,7 @@ class Reptilian(object):
             url = self.chatUrl + "/chat/luckyBag.do?_t="+Time_utils.getNowTimeNum()
             data = "token=" +self.token+ "&packetId=" + str(_id)
 
-            self.logs_i ("抢包数据体：[url:%s,data:%s]"%(url,data))
+            self.logs_i ("解包用时：%s,抢包数据体：[url:%s,data:%s]"%(time.time()-time_start,url,data))
 
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:35.0) Gecko/20100101 Firefox/35.0",
@@ -447,8 +487,6 @@ class Reptilian(object):
             self.logs_i(str_msg + "结果[：%s"% r.text)
             _json = json.loads(r.text)
             resultCode = _json.get("result",-1)
-            # 记录这个ID，不要重复抢
-            save_receive_id(self.Website+"-"+self.user+"-"+str(_id))
             if resultCode == 0:
                 # 抢包成功
                 str_msg  += "成功抢到[%s]元"%str(_json.get("money"))
@@ -465,23 +503,31 @@ class Reptilian(object):
             else:
                 # 错误，未知！
                 str_msg += _json.get("msg","未知领取错误！"+r.text)
+                if str_msg.find("访问权限异常") != -1:
+                    self.logs_e("账号Token疑似过期，自动断开等待重新连接...",True)
+                    self.close_wss()
+
+            if resultCode > 0 and resultCode < 5:
+                # 记录这个ID，不要重复抢
+                save_receive_id(self.Website + "-" + self.user + "-" + str(_id))
 
             self.msg = str_msg
-            self.logs_i(self.msg )
-            self.logs( self.msg )
-            print(self.msg)
+            self.logs_i( str_msg , True)
+            self.logs( str_msg )
 
         except Exception as e2:
             if str_msg:
                 # 有记录
-                self.msg = str_msg+str(e2)
-                self.logs_e(  self.msg )
-                self.logs(self.msg)
+                msg = str_msg+str(e2)
+                self.msg = msg
+                self.logs_e(  msg , True)
+                self.logs(msg)
             else:
                 # 无记录
-                self.msg = "抢包异常错误：" +  str(e2)
-                self.logs_e( self.msg)
-            print(self.msg)
+                msg = "抢包异常错误：" +  str(e2)
+                self.msg = msg
+                self.logs_e( msg,True)
+
 
 
 
@@ -491,7 +537,10 @@ class Reptilian(object):
         连接wss
         :return: 成功，进入等待 失败 返回False
         """
+        self.lock.acquire() # 保证在任何时间，一个类下只能有一个连接  (加锁是因为不确定是不是我的线程错乱了！！)
+        self.is_god_chat = False
         try:
+            self.msg = "正在连接wss"
             # 加载token
             if not self.getToken():
                 raise Exception("token获取失败！")
@@ -509,7 +558,7 @@ class Reptilian(object):
                       }
             # 处理wss地址
             wssUrl = "wss://" + self.chatUrl.replace("https://","").replace("http://","")
-            wssUrl += "/webchat/"+str(random.randint(100,999))+"/kx1orcey/websocket"
+            wssUrl += "/webchat/"+str(random.randint(100,999))+"/"+TextUtils.getRandomCharacter(8)+"/websocket"
 
             # 创建webSocket应用
             self.ws = websocket.WebSocketApp(wssUrl,
@@ -528,10 +577,14 @@ class Reptilian(object):
         except Exception as e:
             self.ws = None
             self.logs_e("连接wss失败："+str(e))
-
+        finally:
+            self.lock.release() # 释放锁
 
 
     def close_wss(self):
+        if self.is_god_chat:
+            save_up_down(self.Website_yuan + "-" + self.user, "已断开Wss。")
+        self.is_god_chat = False
         try:
             if self.ws:
                 self.ws.close()
@@ -546,7 +599,8 @@ class Reptilian(object):
         :param data: 
         :return: 
         """
-        self.ws.send(data)
+        if self.ws:
+            self.ws.send(data)
 
 
     def on_connect_success(self):
@@ -555,29 +609,11 @@ class Reptilian(object):
         :return:  没报错说明成功
         """
         self.msg = "正在登录聊天室！"
-
-        time.sleep(0.5)
         # 验证token信息？
-        str1 = r'["CONNECT\ntoken:'+self.token+r'\nroomId:1\naccept-version:1.1,1.0\nheart-beat:10000,10000\n\n\u0000"]'
+        str1 = r'["CONNECT\ntoken:' +self.token+ r'\nroomId:'+self.roomId+r'\naccept-version:1.1,1.0\nheart-beat:10000,10000\n\n\u0000"]'
         self.sendWs(str1)
 
-        time.sleep(0.5)
-        # 获取历史消息？
-        str1 = r'["SUBSCRIBE\ntoken:'+self.token+r'\nroomId:1\nid:sub-0\ndestination:/app/init\n\n\u0000"]'
-        self.sendWs(str1)
 
-        time.sleep(0.5)
-        # 应该是告诉服务器 我要接受消息
-        str1 = r'["SUBSCRIBE\nid:sub-1\ndestination:/server/message/1\n\n\u0000"]'
-        self.sendWs(str1)
-
-        time.sleep(0.5)
-        # 未知
-        str1 = r'["SUBSCRIBE\nid:sub-2\ndestination:/user/'+self.token+r'/queue\n\n\u0000"]'
-        self.sendWs(str1)
-
-        self.msg = "连接已建立！"
-        self.logs_i("已成功建立wss...",True)
 
 
     def on_message(self,data):
@@ -586,16 +622,56 @@ class Reptilian(object):
         :param ws: 
         :return: 
         """
+        time_start = time.time() # 记录开始时间.
+
         find_x = data.find(r"\n\n")
         if find_x ==-1:
             if "o" == data:
                 self.on_connect_success()
+            if "h1" == data: # 暂时废弃，这里不可能再执行
+                # 应该是告诉服务器 我要接受消息
+                str1 = r'["SUBSCRIBE\nid:sub-1\ndestination:/server/message/'+self.roomId+r'\n\n\u0000"]'
+                self.sendWs(str1)
+                time.sleep(0.1)
+                # 未知
+                str1 = r'["SUBSCRIBE\nid:sub-2\ndestination:/user/' + self.token + r'/queue\n\n\u0000"]'
+                self.sendWs(str1)
+                self.msg = "登录聊天室完成！"
+                self.logs_i("登录聊天室完成！", True)
+                print(data)
             return
+
+
+        if data[:50].find("version:1.1") != -1:
+            # 获取历史消息？
+            str1 = r'["SUBSCRIBE\ntoken:'+self.token+r'\nroomId:'+self.roomId+r'\nid:sub-0\ndestination:/app/init\n\n\u0000"]'
+            self.sendWs(str1)
+
+        if data[:50].find("ndestination:/app/init") != -1:
+            # 应该是告诉服务器 我要接受消息
+            str1 = r'["SUBSCRIBE\nid:sub-1\ndestination:/server/message/'+self.roomId+r'\n\n\u0000"]'
+            self.sendWs(str1)
+            time.sleep(0.1)
+            # 未知
+            str1 = r'["SUBSCRIBE\nid:sub-2\ndestination:/user/'+self.token+r'/queue\n\n\u0000"]'
+            self.sendWs(str1)
+            self.msg = "登录聊天室完成！"
+            self.logs_i("登录聊天室完成！",True)
+            self.is_god_chat = True
+            save_up_down(self.Website_yuan+"-"+self.user,"登录聊天室完成。")
+
+        # 拿到的数据是经过usc2编码的，这里不进行转码，直接字符串替换
+        data2 = data
+
         data = TextUtils.getTextMiddle(data,r"\n\n",r'\u0000"]').replace(r'\"',r'"');
+        # 这个正则是匹配红包的正则，其他的聊天记录啥的不会匹配，直接过滤
         res = re.findall(r',"content":"({.*?})",',data)
         for _ in res:
-            self.on_envelopes(_.replace(r'\\"',r'"'))
+            # 调用领取红包事件，使用线程。
+            threading.Thread(target= self.on_envelopes, args=(_.replace(r'\\"',r'"'),time_start,)).start()
 
+        if len(res) <1 and  data2.find("totalMoney") !=-1 and  data2.find("rechMoney") !=-1:
+            self.logs_e("红包未匹配："+data2,True)
 
 
     def on_close(self):
@@ -604,6 +680,10 @@ class Reptilian(object):
         :return: 
         """
         try:
+            if self.is_god_chat:
+                save_up_down(self.Website_yuan + "-" + self.user, "已断开Wss。")
+
+            self.is_god_chat = False
             self.ws = None
             self.logs_i("wss连接被关闭....",True)
             self.msg = "连接已关闭！"
@@ -616,16 +696,17 @@ class Reptilian(object):
 
 
 if __name__ == '__main__':
+    pass
     # r = Reptilian("https://www.jx1108.com[jx1108]","yeskpd","a123456")
-    r = Reptilian("https://www.ys39.com","yeskpd","a123456")
+    # r = Reptilian("https://www.ys39.com","yeskpd","a123456")
     # r = Reptilian("http://www.yw32.com", "yeskpd", "a123456")
-    r.loadConfigjs()
-    print(r.login())
+    # r.loadConfigjs()
+    # print(r.login())
 
 
 
-    while True:
-        try:
-            r.connect_wss()
-        except Exception as e:
-            print(e)
+    # while True:
+        # try:
+            # r.connect_wss()
+        # except Exception as e:
+            # print(e)

@@ -1,6 +1,6 @@
 {
-  "debug":false,
-  "threadNum":10,
+  "debug":true,
+  "threadNum":5,
   "heartbeatTime":30,
   "loginErrTime":60,
   "loadTextUserPath":"./userList.txt"
